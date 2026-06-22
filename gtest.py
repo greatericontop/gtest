@@ -1,3 +1,5 @@
+#! /usr/bin/env python3
+
 
 from __future__ import annotations
 
@@ -11,12 +13,15 @@ from abc import abstractmethod
 from pathlib import Path
 
 
+compiled = set()
+
+
 def get_generators(p: str) -> list[typing.Callable]:
     """Retrieve generator(s) from the specified .py file.
     Returns a list of functions, each of which outputs a test to stdout (which may be remapped).
     """
-    if p.endswith('.py'):
-        path = Path(p).resolve()
+    path = Path(p).resolve()
+    if path.suffix == '.py':
         spec = importlib.util.spec_from_file_location(path.stem, path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -24,27 +29,49 @@ def get_generators(p: str) -> list[typing.Callable]:
         if not ret:
             raise RuntimeError(f'No test generator functions found. Expected at least one function named gen_*.')
         return ret
+    elif path.suffix == '.cpp':
+        exec_path = path.with_suffix('')
+        if path not in compiled:
+            subprocess.run(['g++', '-O2', '-o', exec_path, path], check=True)
+            print(f'{path} -> {exec_path}')
+            compiled.add(path)
+        f = lambda: subprocess.run([exec_path], stdout=sys.stdout, check=True)
+        f.__name__ = p
+        return [f]
+    elif path.suffix == '':
+        f = lambda: subprocess.run([path], stdout=sys.stdout, check=True)
+        f.__name__ = p
+        return [f]
     else:
         raise NotImplementedError('Sorry, python is the only supported language for this at the moment!')
+
+
+def expand_exec(file: Path) -> list:
+    """Expand the given executable (e.g. add python before .py files)"""
+    if file.suffix == '.py':
+        return [sys.executable, file]
+    elif file.suffix == '.cpp':
+        exec_file = file.with_suffix('')
+        if file not in compiled:
+            subprocess.run(['g++', '-O2', '-o', exec_file, file], check=True)
+            print(f'{file} -> {exec_file}')
+            compiled.add(file)
+        return [exec_file]
+    else:
+        return [file]
 
 
 def run_sol(file: Path, input_file: Path, output_file: Path, force: bool) -> None:
     """Run the solution located at the filename with the input from input_file and write the output to output_file."""
     if output_file.exists() and not force:
-        raise RuntimeError(f'Output file {output_file} already exists. Refusing to overwrite.')
+        raise RuntimeError(f'Output file {output_file} already exists. Refusing to overwrite without -f.')
     with open(input_file, 'r') as stdin, open(output_file, 'w') as stdout:
-        l = [file]
-        if file.suffix == '.py':
-            l = [sys.executable, file]
-        subprocess.run(l, stdin=stdin, stdout=stdout, check=True)
+        subprocess.run(expand_exec(file.resolve()), stdin=stdin, stdout=stdout, check=True)
 
 
 def run_checker(file: Path) -> bool:
     """Run the checker. Return True if it returns 0; false otherwise."""
-    l = [file]
-    if file.suffix == '.py':
-        l = [sys.executable, file]
-    return subprocess.run(l, check=False).returncode == 0
+    return subprocess.run(expand_exec(file), check=False).returncode == 0
 
 
 def token_checker() -> bool:
@@ -85,7 +112,7 @@ def main():
 
     genfile = Path('gen.in')
     if genfile.exists() and not args.f:
-        raise RuntimeError(f'Input file {genfile} already exists. Refusing to overwrite.')
+        raise RuntimeError(f'Input file {genfile} already exists. Refusing to overwrite without -f.')
     gens = get_generators(args.generator)
     for gen in gens:
         for t in range(1, args.trials+1):
